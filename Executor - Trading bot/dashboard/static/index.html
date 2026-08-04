@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Bot - Dashboard Central</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
+  h1 { color: #00d4aa; border-bottom: 2px solid #00d4aa; padding-bottom: 10px; }
+  .env-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 20px; }
+  .env-card { background: #16213e; border-radius: 8px; padding: 20px; border: 1px solid #0f3460; transition: transform 0.2s; }
+  .env-card:hover { transform: translateY(-4px); border-color: #00d4aa; }
+  .env-card h2 { margin: 0 0 10px 0; color: #e0e0e0; }
+  .env-card .port { color: #00d4aa; font-size: 1.2em; }
+  .env-card .status { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.85em; margin-top: 10px; }
+  .status-active { background: #00d4aa33; color: #00d4aa; border: 1px solid #00d4aa; }
+  .status-inactive { background: #e9456033; color: #e94560; border: 1px solid #e94560; }
+  a { color: #00d4aa; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .footer { margin-top: 40px; text-align: center; color: #777; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<h1>Trading Bot - Dashboard Central</h1>
+<p>Selecciona un entorno para ver su dashboard en vivo:</p>
+<div class="env-grid">
+  <div class="env-card">
+    <h2>Paper Trading</h2>
+    <div class="port">Puerto 8001</div>
+    <div><span class="status status-inactive" id="status-papper">Desconocido</span></div>
+    <p><a href="http://localhost:8001/live_dashboard.html" target="_blank">Abrir Dashboard</a></p>
+  </div>
+  <div class="env-card">
+    <h2>Hyperliquid Perps</h2>
+    <div class="port">Puerto 8004</div>
+    <div><span class="status status-inactive" id="status-hyperliquid_mainnet">Desconocido</span></div>
+    <p><a href="http://localhost:8004/live_dashboard.html" target="_blank">Abrir Dashboard</a></p>
+  </div>
+  <div class="env-card">
+    <h2>Hyperliquid Testnet</h2>
+    <div class="port">Puerto 8005</div>
+    <div><span class="status status-inactive" id="status-hyperliquid_testnet">Desconocido</span></div>
+    <p><a href="http://localhost:8005/live_dashboard.html" target="_blank">Abrir Dashboard</a></p>
+  </div>
+</div>
+<div class="footer">
+  Trading Bot Executor - Estrategias portables desde Backtesting
+</div>
+<script>
+  const envs = ['papper', 'hyperliquid_mainnet', 'hyperliquid_testnet'];
+  const ports = { papper: 8001, hyperliquid_mainnet: 8004, hyperliquid_testnet: 8005 };
+
+  envs.forEach(env => {
+    fetch(`http://localhost:${ports[env]}/api/status`)
+      .then(r => r.json())
+      .then(data => {
+        const el = document.getElementById(`status-${env}`);
+        if (data && data.status === 'running') {
+          el.textContent = 'Activo';
+          el.className = 'status status-active';
+        } else {
+          el.textContent = 'Inactivo';
+          el.className = 'status status-inactive';
+        }
+      })
+      .catch(() => {
+        const el = document.getElementById(`status-${env}`);
+        el.textContent = 'Inactivo';
+        el.className = 'status status-inactive';
+      });
+  });
+</script>
+</body>
+</html>

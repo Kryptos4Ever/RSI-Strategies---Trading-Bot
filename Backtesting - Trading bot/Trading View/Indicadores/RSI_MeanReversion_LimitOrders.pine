@@ -1,0 +1,175 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+// RSI Mean Reversion — Limit Order Prices
+// ══════════════════════════════════════════════════════════════════════════════
+// Para cada vela, calcula los precios límite que usaría la estrategia
+// RSI Mean Reversion (basada en RSIEngine.price_for_rsi() de Python).
+//
+// Niveles calculados:
+//   - Oversold  (30) → OPEN_LONG / ADD_LONG / CLOSE_SHORT
+//   - Overbought(70) → OPEN_SHORT / ADD_SHORT / CLOSE_LONG
+//   - Reduce L  (50) → REDUCE_LONG
+//   - Reduce S  (50) → REDUCE_SHORT
+//
+// Cada nivel se dibuja como stepline independiente con su propio color.
+// Los valores de RSI period y los thresholds son configurables.
+// ══════════════════════════════════════════════════════════════════════════════
+
+indicator("RSI Mean Reversion - Limit Order Prices", overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PARÁMETROS CONFIGURABLES
+// ══════════════════════════════════════════════════════════════════════════════
+
+rsi_period           = input.int(14,     "RSI Period",           minval=2)
+oversold_threshold   = input.float(30.0, "Oversold Threshold",   minval=0.0, maxval=100.0)
+overbought_threshold = input.float(70.0, "Overbought Threshold", minval=0.0, maxval=100.0)
+reduce_long_level    = input.float(50.0, "Reduce Long Level",    minval=0.0, maxval=100.0)
+reduce_short_level   = input.float(50.0, "Reduce Short Level",   minval=0.0, maxval=100.0)
+
+// Colores
+color_oversold   = input.color(color.new(#00E676, 0),  "Color Oversold (30)")
+color_overbought = input.color(color.new(#FF1744, 0),  "Color Overbought (70)")
+color_reduce_l   = input.color(color.new(#FFD600, 0),  "Color Reduce Long (50)")
+color_reduce_s   = input.color(color.new(#FF9100, 0),  "Color Reduce Short (50)")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CÁLCULO RSI MANUAL — Wilder's Smoothing
+// ══════════════════════════════════════════════════════════════════════════════
+//  Equivalente a RSIEngine.update() en Python.
+//  Necesitamos acceso a avg_gain, avg_loss, prev_close para poder
+//  calcular price_for_rsi() (la fórmula inversa).
+
+var float avg_gain   = 0.0
+var float avg_loss   = 0.0
+var int   count      = 0
+var float prev_close = na
+
+// ── Primera vela: solo guardar prev_close ────────────────────────────────
+if na(prev_close)
+    prev_close := close
+    // avg_gain, avg_loss y count se quedan en 0
+else
+    // ── Calcular cambio respecto a la vela anterior ─────────────────────
+    change = close - prev_close
+    gain   = math.max(change, 0)
+    loss   = math.max(-change, 0)
+    prev_close := close
+
+    // ── Acumulación inicial (periodo de warmup) ─────────────────────────
+    if count < rsi_period
+        avg_gain := avg_gain + gain
+        avg_loss := avg_loss + loss
+        count    := count + 1
+
+        if count == rsi_period
+            // Primer cálculo: promedios simples
+            avg_gain := avg_gain / rsi_period
+            avg_loss := avg_loss / rsi_period
+
+    // ── Wilder's Smoothing (después del warmup) ─────────────────────────
+    else
+        avg_gain := (avg_gain * (rsi_period - 1) + gain) / rsi_period
+        avg_loss := (avg_loss * (rsi_period - 1) + loss) / rsi_period
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FUNCIONES AUXILIARES
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── rsi_to_rs: Convierte RSI a RS ──────────────────────────────────────────
+// RS = 100/(100 - RSI) - 1
+rsi_to_rs(rsi_value) =>
+    if rsi_value >= 100.0
+        1e10  // infinito aproximado
+    else if rsi_value <= 0.0
+        0.0
+    else
+        100.0 / (100.0 - rsi_value) - 1.0
+
+// ── price_for_rsi: Calcula el precio necesario para alcanzar un RSI objetivo ─
+// Equivalente a RSIEngine.price_for_rsi() en Python.
+// NO modifica el estado interno del RSI.
+// La función retorna na si no hay datos suficientes.
+price_for_rsi(target_rsi) =>
+    // Variable local para el resultado (por defecto na)
+    float result = na
+
+    // Solo calcular si hay datos suficientes
+    if not na(prev_close) and count >= rsi_period
+        target_rs = rsi_to_rs(target_rsi)
+        p = rsi_period
+        prev = prev_close
+        G = avg_gain
+        L = avg_loss
+
+        // ── Caso A: precio > prev_close, loss = 0 ──────────────────────
+        // price_a = prev + (p-1) * (RS_target * L - G)
+        price_a = prev + (p - 1) * (target_rs * L - G)
+
+        // ── Caso B: precio < prev_close, gain = 0 ──────────────────────
+        // price_b = prev - (p-1) * (G / RS_target - L)
+        price_b = target_rs > 0 ? prev - (p - 1) * (G / target_rs - L) : prev
+
+        // ── Guard contra precios negativos ──────────────────────────────
+        min_price = math.max(prev * 1e-10, 1e-10)
+        price_a := math.max(price_a, min_price)
+        price_b := math.max(price_b, min_price)
+
+        // ── Casos borde (idéntico a Python) ────────────────────────────
+
+        // Sin ganancia ni pérdida histórica
+        if L == 0.0 and G == 0.0
+            if target_rsi >= 50.0
+                result := prev * 1.001  // subida mínima
+            else
+                result := prev * 0.999  // bajada mínima
+
+        // Sin pérdidas históricas → necesitamos Caso B (generar pérdida)
+        else if L == 0.0 and target_rsi < 100.0
+            if price_b < prev
+                result := price_b
+            else
+                result := prev * 0.999
+
+        // Sin ganancias históricas → necesitamos Caso A (generar ganancia)
+        else if G == 0.0 and target_rsi > 0.0
+            if price_a > prev
+                result := price_a
+            else
+                result := prev * 1.001
+
+        // Caso normal: probamos ambos y elegimos el que cumple la condición
+        else if price_a > prev
+            result := price_a
+
+        else if price_b < prev
+            result := price_b
+
+        // Si ninguno funciona, retornar prev_close
+        else
+            result := prev
+
+    // Retornar resultado (na si no hay datos, o el precio calculado)
+    result
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CÁLCULO DE PRECIOS POR VELA
+// ══════════════════════════════════════════════════════════════════════════════
+//  Cada vela calcula sus propios precios límite.
+//  Las órdenes de velas pasadas NO se reutilizan.
+
+P_oversold     = price_for_rsi(oversold_threshold)
+P_overbought   = price_for_rsi(overbought_threshold)
+P_reduce_long  = price_for_rsi(reduce_long_level)
+P_reduce_short = price_for_rsi(reduce_short_level)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTS — Stepline
+// ══════════════════════════════════════════════════════════════════════════════
+//  Se usa style=plot.style_stepline para que el precio de cada vela se
+//  muestre como un escalón (horizontal hasta la siguiente vela).
+
+plot(P_oversold,     "Oversold (30)",   color_oversold,   style=plot.style_stepline, linewidth=1)
+plot(P_overbought,   "Overbought (70)", color_overbought, style=plot.style_stepline, linewidth=1)
+plot(P_reduce_long,  "Reduce Long (50)", color_reduce_l,   style=plot.style_stepline, linewidth=1)
+plot(P_reduce_short, "Reduce Short (50)", color_reduce_s,  style=plot.style_stepline, linewidth=1)
