@@ -27,7 +27,7 @@ Puede editarse directamente o sobreescribir variables vía variables de entorno.
 # ══════════════════════════════════════════════════════════════════════════════
 # TEMPORALIDADES
 # ══════════════════════════════════════════════════════════════════════════════
-PRIMARY_TIMEFRAME   = "1h"   # "1h", "15m" o "5m"
+PRIMARY_TIMEFRAME   = "15m"   # "1h", "15m" o "5m"
 SECONDARY_TIMEFRAME = "5m"   # "15m", "5m", "1m" o "" para desactivar
 
 
@@ -43,7 +43,7 @@ RESULTS_JSON = "backtest_results.json"
 # RANGO TEMPORAL
 # ══════════════════════════════════════════════════════════════════════════════
 FECHA_INICIO = '2021-11-10'  # Formato YYYY-MM-DD
-FECHA_FIN    = '2022-11-22'  # Formato YYYY-MM-DD
+FECHA_FIN    = '2025-10-06'  # Formato YYYY-MM-DD
 
 # ── Referencias rápidas de fechas útiles para backtesting ────────────────────
 #   Bottom Bear 2018  : '2018-12-10'   → Fin del mercado bajista 2018

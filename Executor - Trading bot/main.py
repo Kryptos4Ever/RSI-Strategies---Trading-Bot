@@ -186,6 +186,8 @@ def main():
                         help="Precio de reducción SHORT")
     parser.add_argument("--dashboard-port", type=int, default=None,
                         help="Puerto del dashboard (opcional, si no se especifica usa el preasignado del modo en .env)")
+    parser.add_argument("--timeframe", default=None,
+                        help="Temporalidad de las velas (1m, 5m, 15m, 30m, 1h, 4h, 1d...)")
     args = parser.parse_args()
 
     # ═══════════════════════════════════════════════════════════════════
@@ -260,6 +262,8 @@ def main():
     # ═══════════════════════════════════════════════════════════════════
     # 7. Inyectar todo en el Engine
     # ═══════════════════════════════════════════════════════════════════
+    # Temporalidad: CLI > .env > "1h"
+    timeframe = args.timeframe or secrets("TIMEFRAME", "1h")
     engine = LiveEngine(
         feed=actors["feed"],
         wallet=actors["wallet"],
@@ -276,6 +280,7 @@ def main():
         max_posiciones=args.max_posiciones,
         slot_factor=args.slot_factor,
         dashboard_port=args.dashboard_port,
+        candle_interval=timeframe,
     )
 
     # ═══════════════════════════════════════════════════════════════════

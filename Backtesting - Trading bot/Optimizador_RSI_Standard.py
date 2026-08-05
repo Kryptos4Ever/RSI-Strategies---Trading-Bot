@@ -55,7 +55,7 @@ AUTO_SAVE_INTERVAL  = 50         # Guardar checkpoint cada N combinaciones
 
 # ── Pruning (early stopping) ─────────────────────────────────────────────────
 PRUNE_ENABLED       = True
-PRUNE_AFTER_PCT     = 0.20       # % de velas antes de empezar a evaluar
+PRUNE_AFTER_PCT     = 0.15       # % de velas antes de empezar a evaluar
 PRUNE_THRESHOLD     = 0.90       # Abortar si portfolio < 90% del capital inicial
 PRUNE_BH_RATIO      = 0.85       # Abortar si está 5% peor que Buy & Hold
 
@@ -772,6 +772,7 @@ def worker_chunk(chunk_data: tuple) -> List[Tuple[Dict, Dict, float]]:
         total = len(candles)
         last_candle = None
         pruned = False
+        portfolio_history: List[float] = []
 
         strategy.on_start(wallet)
 

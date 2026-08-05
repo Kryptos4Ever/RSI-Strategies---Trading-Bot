@@ -22,6 +22,7 @@ from hyperliquid.utils import constants
 
 from actors.price_feed import PriceFeed, AsyncFeed, Candle
 from support.logger import get_logger
+from support.secrets import secrets, timeframe_seconds
 
 log = get_logger("hyperliquid_testnet_feed")
 
@@ -48,10 +49,13 @@ class HyperliquidRESTFeed(PriceFeed):
     CANDLE_INTERVAL = "1h"
     INTERVAL_MS = 3_600_000
 
-    def __init__(self) -> None:
+    def __init__(self, interval: str | None = None) -> None:
         super().__init__()
         self._info = None
-        log.info("HyperliquidRESTFeed Testnet inicializado")
+        # Temporalidad configurable: parámetro explícito > .env > "1h"
+        self.CANDLE_INTERVAL = (interval or secrets("TIMEFRAME", "1h")).strip().lower()
+        self.INTERVAL_MS = timeframe_seconds(self.CANDLE_INTERVAL) * 1000
+        log.info("HyperliquidRESTFeed Testnet inicializado", interval=self.CANDLE_INTERVAL)
 
     def _get_info(self):
         if self._info is None:
@@ -235,9 +239,10 @@ class HyperliquidWSFeed(PriceFeed, AsyncFeed):
                             retry_in_s=f"{delay:.1f}", attempt=attempt)
                 fallback_end = _time.time() + delay
                 _last_fallback_ts = 0
+                candle_seconds = timeframe_seconds(interval)
                 while self._running and _time.time() < fallback_end:
                     now = int(_time.time())
-                    start = now - 3600
+                    start = now - candle_seconds
                     candles = await rest_feed.get_candles_async(session, start, now, symbol, interval)
                     if candles:
                         latest = candles[-1]

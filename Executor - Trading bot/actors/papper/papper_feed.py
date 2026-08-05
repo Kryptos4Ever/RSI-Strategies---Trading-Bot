@@ -96,8 +96,8 @@ class PapperRESTFeed:
             log.debug(f"PapperRESTFeed ticker error: {e}")
             return {}
 
-    def get_candles(self, start: int, end: int, symbol: str = "BTCUSDT") -> List[Candle]:
-        """Obtiene velas historicas de 1h de forma sincrona para warm-up."""
+    def get_candles(self, start: int, end: int, symbol: str = "BTCUSDT", interval: str = "1h") -> List[Candle]:
+        """Obtiene velas historicas del intervalo indicado de forma sincrona para warm-up."""
         try:
             import json as _json
             import urllib.parse
@@ -105,7 +105,7 @@ class PapperRESTFeed:
 
             params = urllib.parse.urlencode({
                 "symbol": symbol,
-                "interval": "1h",
+                "interval": interval,
                 "startTime": int(start) * 1000,
                 "endTime": int(end) * 1000,
                 "limit": 1000,
@@ -375,9 +375,9 @@ class PapperWSFeed(PriceFeed, AsyncFeed):
                 await asyncio.sleep(delay)
 
     # ── Implementación de PriceFeed ─────────────────────────────────────
-    def get_candles(self, start: int, end: int, symbol: str = "BTCUSDT") -> List[Candle]:
+    def get_candles(self, start: int, end: int, symbol: str = "BTCUSDT", interval: str = "1h") -> List[Candle]:
         """Delega en PapperRESTFeed para obtener velas históricas."""
-        return self._rest_feed.get_candles(start, end, symbol)
+        return self._rest_feed.get_candles(start, end, symbol, interval)
 
     def subscribe(self, callback, symbol: str = "BTCUSDT") -> None:
         """No aplica para el feed asíncrono; usar stream() en su lugar."""

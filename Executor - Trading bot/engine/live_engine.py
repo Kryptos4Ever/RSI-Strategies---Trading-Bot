@@ -36,7 +36,7 @@ from support.types import Candle, Signal, SignalType, PositionDirection
 from actors.order_book import OrderSide
 from support.logger import get_logger, set_status_line_active
 from support.time_utils import to_iso
-from support.secrets import secrets
+from support.secrets import secrets, timeframe_seconds
 from strategies.base_strategy import BaseStrategy
 from state.state_manager import Checkpoint
 from state.results_store import ResultsStore, collateral_currency_for_environment
@@ -161,6 +161,7 @@ class LiveEngine:
         slot_factor: float = 1.0,
         dashboard_port: int | None = None,
         telegram=None,
+        candle_interval: str | None = None,
     ) -> None:
         self.environment = environment.lower()
         self.feed = feed
@@ -184,6 +185,11 @@ class LiveEngine:
         self.symbol = symbol
         self.saldo_inicial = saldo_inicial
         self.commission_pct = commission_pct
+
+        # ── Temporalidad de las velas (desde .env o inyectada) ────────
+        # Precedencia: parámetro explícito > .env > "1h"
+        self.candle_interval = (candle_interval or secrets("TIMEFRAME", "1h")).strip().lower()
+        self.candle_seconds = timeframe_seconds(self.candle_interval)
         explicit_collateral = secrets(
             f"{self.environment.upper()}_COLLATERAL_CURRENCY",
             secrets("COLLATERAL_CURRENCY", ""),
@@ -320,15 +326,19 @@ class LiveEngine:
                 if warm_up_candles < 24:
                     warm_up_candles = 24
 
+                # Rango histórico calculado según la temporalidad configurada.
+                # Se pide el doble del mínimo para que la API (máx 1000 velas/request)
+                # siempre devuelva suficientes velas del intervalo correcto.
+                warm_back_seconds = max(warm_up_candles * 2, 30) * self.candle_seconds
                 candles_list = rest_feed.get_candles(
-                    int(time.time()) - warm_up_candles * 3600,
+                    int(time.time()) - warm_back_seconds,
                     int(time.time()),
                     self.symbol,
                 )
 
-                # ── Excluir la última vela si está viva (misma hora actual) ──
-                current_hour_ts = (int(time.time()) // 3600) * 3600
-                if candles_list and candles_list[-1].ts == current_hour_ts:
+                # ── Excluir la última vela si está viva (misma vela actual) ──
+                current_candle_ts = (int(time.time()) // self.candle_seconds) * self.candle_seconds
+                if candles_list and candles_list[-1].ts == current_candle_ts:
                     last_candle = candles_list.pop()
                     log.info("Última vela excluida de history_candles (vela viva)",
                              ts=last_candle.ts, open=last_candle.open)
@@ -542,7 +552,7 @@ class LiveEngine:
         print(f"\n  → Dashboard: http://localhost:{dash_port}/live_dashboard.html\n")
 
         try:
-            async for candle, is_closed in self.feed.stream(self.session, self.symbol):
+            async for candle, is_closed in self.feed.stream(self.session, self.symbol, self.candle_interval):
                 if not self._running:
                     break
 
@@ -1665,6 +1675,7 @@ class LiveEngine:
         print(f"  Overbought      : {self._overbought}")
         print(f"  Reduce Long     : {self._reduce_long}")
         print(f"  Reduce Short    : {self._reduce_short}")
+        print(f"  Timeframe       : {self.candle_interval}")
         print(f"  Capital .env    : ${self.saldo_inicial:,.2f}")
         if snap:
             print("-" * 72)

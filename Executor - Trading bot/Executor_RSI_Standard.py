@@ -27,6 +27,7 @@ from engine.live_engine import LiveEngine
 from risk.risk_manager import build_risk_manager
 from state.state_manager import build_state_manager
 from support.logger import get_logger
+from support.secrets import secrets
 
 log = get_logger("executor_rsi_standard_runner")
 
@@ -231,6 +232,8 @@ def parse_args():
                               help="Precio de reducción LONG")
     compat_group.add_argument("--reduce-short", type=float, default=None,
                               help="Precio de reducción SHORT")
+    compat_group.add_argument("--timeframe", default=None,
+                              help="Temporalidad de las velas (1m, 5m, 15m, 30m, 1h, 4h, 1d...)")
     return parser.parse_args()
 
 
@@ -268,6 +271,8 @@ def main() -> None:
     overbought     = args.overbought if args.overbought is not None else OVERBOUGHT_THRESHOLD
     reduce_long    = args.reduce_long if args.reduce_long is not None else REDUCE_LONG
     reduce_short   = args.reduce_short if args.reduce_short is not None else REDUCE_SHORT
+    # Temporalidad: CLI > .env > "1h"
+    timeframe      = args.timeframe or secrets("TIMEFRAME", "1h")
 
     # ══════════════════════════════════════════════════════════════════════════
     # 1. Resolver estrategia
@@ -348,6 +353,7 @@ def main() -> None:
         max_posiciones=max_posiciones,
         slot_factor=slot_factor,
         dashboard_port=None,
+        candle_interval=timeframe,
     )
 
     # ══════════════════════════════════════════════════════════════════════════
