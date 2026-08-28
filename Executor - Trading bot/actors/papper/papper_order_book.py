@@ -16,6 +16,8 @@ from actors.order_book import (
     OrderStatus,
     SimulatedOrderBook,
     SimulatedLimitOrderBook,
+    SimulatedLimitPostOnlyOrderBook,
+    SimulatedLimitGTCOrderBook,
 )
 
 __all__ = [
@@ -25,4 +27,6 @@ __all__ = [
     "OrderStatus",
     "SimulatedOrderBook",
     "SimulatedLimitOrderBook",
+    "SimulatedLimitPostOnlyOrderBook",
+    "SimulatedLimitGTCOrderBook",
 ]

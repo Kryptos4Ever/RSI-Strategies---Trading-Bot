@@ -11,7 +11,7 @@ Sistema de backtesting para estrategias de trading algorítmico sobre BTC/USDT, 
 - [Uso](#uso)
   - [Ejecutar un Backtest](#ejecutar-un-backtest)
   - [Ver Resultados (Dashboard)](#ver-resultados-dashboard)
-- [Estrategia: RSI Mean Reversion](#estrategia-rsi-mean-reversion)
+- [Estrategias: RSI Mean Reversion](#estrategias-rsi-mean-reversion)
 - [Estructura del Proyecto](#estructura-del-proyecto)
 - [Tests](#tests)
 - [Parámetros de Configuración](#parámetros-de-configuración)
@@ -79,7 +79,7 @@ Ver `requirements.txt` para la lista completa.
 
 ```bash
 # 1. Clonar el repositorio
-git clone https://github.com/Kryptos4Ever/Trading-Bot---V1.git
+git clone https://github.com/Kryptos4Ever/RSI-Strategies---Trading-Bot.git
 cd "Backtesting - Trading bot"
 
 # 2. Instalar dependencias
@@ -102,7 +102,7 @@ SECONDARY_TIMEFRAME = "5m"    # "15m", "5m", "1m" o "" para desactivar
 
 # Rango temporal del backtest
 FECHA_INICIO = '2021-11-10'
-FECHA_FIN    = '2022-11-22'
+FECHA_FIN    = '2026-08-10'
 
 # Parámetros generales
 SYMBOL             = "BTCUSDT"
@@ -154,33 +154,44 @@ python "DB/BTCUSDT_5M_Binance_data_downloader_optimized.py"
 
 Esto creará archivos SQLite en la carpeta `DB/` (ej: `DB/btc_1h.db`).
 
-### 2. Configurar el Backtest
+### 2. Ejecutar un Backtest
 
-Abre `Backtest_RSI_MeanReversion.py` y ajusta los parámetros de la estrategia al inicio del archivo:
-
-```python
-# Parámetros de la estrategia RSI
-RSI_PERIOD            = 20
-OVERSOLD_THRESHOLD    = 30.0
-OVERBOUGHT_THRESHOLD  = 70.0
-REDUCE_LONG           = 50.0
-REDUCE_SHORT          = 50.0
-MAX_POSICIONES        = 3
-SLOT_FACTOR           = 1.0
-MODO_OPERACION        = "limite_gtc"   # "limit_post_only" o "limite_gtc"
-```
-
-Los parámetros de temporalidad, fechas, capital y comisión se toman de `config_local.py`.
-
-### 3. Ejecutar el Backtest
+**Opción A — Lanzador único (recomendado),** con estrategia y parámetros por CLI:
 
 ```bash
-python Backtest_RSI_MeanReversion.py
+# Estrategia por defecto (rsi_wilder)
+python Backtest.py
+
+# Elegir estrategia y personalizar parámetros
+python Backtest.py --strategy rsi_standard --rsi-period 7
+python Backtest.py --strategy rsi_wilder \
+                   --start 2023-01-01 --end 2025-01-01 \
+                   --capital 5000 --commission 0.05 \
+                   --max-posiciones 3 --slot-factor 1.0 \
+                   --modo-operacion limite_gtc
+```
+
+Estrategias disponibles: `rsi_wilder` (default) y `rsi_standard`. Los parámetros generales (temporalidades, fechas, capital, comisión) se toman de `config_local.py` y pueden sobrescribirse por CLI (`--start`, `--end`, `--capital`, `--commission`, `--db-path`, etc.).
+
+**Opción B — Lanzadores específicos por estrategia:**
+
+```bash
+python Backtest_RSI_Standard.py
+python Backtest_RSI_Wilder.py
 ```
 
 Esto generará:
 - **Salida en consola:** Configuración, progreso y resumen del backtest
 - **Archivo JSON:** `backtest_results.json` con todos los resultados
+
+### 3. Optimizar Parámetros (opcional)
+
+```bash
+python Optimizador_RSI_Standard.py
+python Optimizador_RSI_Wilder.py
+```
+
+Búsqueda de parámetros óptimos con aceleración JIT (numba) y checkpoints de progreso.
 
 ### 4. Ver Resultados (Dashboard)
 
@@ -200,7 +211,9 @@ Abre `backtest_dashboard.html` directamente en el navegador. Si el archivo `back
 
 ---
 
-## 📈 Estrategia: RSI Mean Reversion
+## 📈 Estrategias: RSI Mean Reversion
+
+El sistema incluye dos variantes de la misma lógica de **Mean Reversion** basada en RSI: `rsi_wilder` (Wilder's Smoothing, por defecto) y `rsi_standard` (Cutler's RSI sobre cierres).
 
 ### Lógica
 
@@ -260,8 +273,11 @@ La estrategia mantiene registros de timestamps de velas donde ya emitió señale
 ```
 Backtesting - Trading bot/
 │
-├── Backtest.py                          # Lanzador genérico (CLI)
-├── Backtest_RSI_MeanReversion.py        # Lanzador específico RSI
+├── Backtest.py                          # Lanzador único (CLI, --strategy rsi_wilder|rsi_standard)
+├── Backtest_RSI_Standard.py             # Lanzador específico RSI Standard (Cutler)
+├── Backtest_RSI_Wilder.py               # Lanzador específico RSI Wilder
+├── Optimizador_RSI_Standard.py          # Optimización de parámetros RSI Standard
+├── Optimizador_RSI_Wilder.py            # Optimización de parámetros RSI Wilder
 ├── config_local.py                      # Configuración global
 ├── requirements.txt                     # Dependencias Python
 ├── pyproject.toml                       # Configuración del proyecto
@@ -278,11 +294,13 @@ Backtesting - Trading bot/
 │
 ├── strategies/
 │   ├── base_strategy.py                 # Clase base abstracta
-│   └── rsi_mean_reversion.py            # Estrategia RSI Mean Reversion
+│   ├── rsi_standard.py                  # Estrategia RSI Standard (Cutler's RSI)
+│   └── rsi_wilder.py                    # Estrategia RSI Wilder (Wilder's Smoothing)
 │
 ├── indicadores/
 │   ├── __init__.py
-│   └── rsi.py                          # Cálculo RSI (Wilder Smoothing)
+│   ├── rsi.py                           # Cálculo RSI (Wilder Smoothing)
+│   └── rsi_standard.py                  # Cálculo RSI estándar (Cutler)
 │
 ├── risk/
 │   ├── __init__.py
@@ -306,8 +324,9 @@ Backtesting - Trading bot/
 ├── tests/
 │   ├── conftest.py                     # Fixtures compartidos
 │   ├── strategies/
-│   │   ├── test_rsi_mean_reversion.py  # Tests básicos
-│   │   └── test_rsi_mean_reversion_comprehensive.py  # Tests exhaustivos
+│   │   ├── test_rsi_standard.py          # Tests RSI Standard
+│   │   ├── test_rsi_wilder.py            # Tests RSI Wilder
+│   │   └── test_rsi_wilder_comprehensive.py  # Tests exhaustivos
 │   ├── actors/
 │   ├── engine/
 │   ├── integration/
@@ -332,16 +351,16 @@ El sistema incluye **101 tests** que cubren:
 
 | Categoría | Archivo | Tests | Descripción |
 |---|---|---|---|
-| Conversiones RSI↔RS | `test_rsi_mean_reversion_comprehensive.py` | 7 | Roundtrip, valores clave, extremos |
-| `price_for_rsi()` matemático | `test_rsi_mean_reversion_comprehensive.py` | 11 | Verificación de fórmula inversa |
-| `price_for_rsi()` casos extremos | `test_rsi_mean_reversion_comprehensive.py` | 13 | G=0, L=0, period=2, period=20, precios extremos |
-| Zonas y fronteras | `test_rsi_mean_reversion_comprehensive.py` | 9 | RSI=30, 50, 70 exactos |
-| Precios en señales | `test_rsi_mean_reversion_comprehensive.py` | 8 | Precios correctos por tipo de señal |
-| Combinaciones de señales | `test_rsi_mean_reversion_comprehensive.py` | 10 | Según estado de wallet |
-| Control de duplicados | `test_rsi_mean_reversion_comprehensive.py` | 3 | Sets `_fired_*` |
-| Ciclos completos | `test_rsi_mean_reversion_comprehensive.py` | 6 | LONG/SHORT completos |
-| Escenarios reales | `test_rsi_mean_reversion_comprehensive.py` | 4 | Volatilidad extrema, mercado lateral |
-| Tests básicos | `test_rsi_mean_reversion.py` | 28 | RSIEngine + estrategia básica |
+| Conversiones RSI↔RS | `test_rsi_wilder_comprehensive.py` | 7 | Roundtrip, valores clave, extremos |
+| `price_for_rsi()` matemático | `test_rsi_wilder_comprehensive.py` | 11 | Verificación de fórmula inversa |
+| `price_for_rsi()` casos extremos | `test_rsi_wilder_comprehensive.py` | 13 | G=0, L=0, period=2, period=20, precios extremos |
+| Zonas y fronteras | `test_rsi_wilder_comprehensive.py` | 9 | RSI=30, 50, 70 exactos |
+| Precios en señales | `test_rsi_wilder_comprehensive.py` | 8 | Precios correctos por tipo de señal |
+| Combinaciones de señales | `test_rsi_wilder_comprehensive.py` | 10 | Según estado de wallet |
+| Control de duplicados | `test_rsi_wilder_comprehensive.py` | 3 | Sets `_fired_*` |
+| Ciclos completos | `test_rsi_wilder_comprehensive.py` | 6 | LONG/SHORT completos |
+| Escenarios reales | `test_rsi_wilder_comprehensive.py` | 4 | Volatilidad extrema, mercado lateral |
+| Tests básicos | `test_rsi_wilder.py` | 28 | RSIEngine + estrategia básica |
 
 ### Ejecutar Tests
 
@@ -398,18 +417,19 @@ El dashboard (`backtest_dashboard.html`) es una aplicación web autónoma que vi
 
 ## ⚙️ Parámetros de Configuración Detallados
 
-### Backtest_RSI_MeanReversion.py
+### Backtest.py / Estrategias RSI
+
+Parámetros por defecto de las estrategias (`get_default_config`), sobrescribibles por CLI:
 
 | Parámetro | Default | Descripción |
 |---|---|---|
-| `RSI_PERIOD` | 20 | Período del cálculo RSI |
-| `OVERSOLD_THRESHOLD` | 30.0 | Límite de sobreventa (abrir LONG) |
-| `OVERBOUGHT_THRESHOLD` | 70.0 | Límite de sobrecompra (abrir SHORT) |
-| `REDUCE_LONG` | 50.0 | Precio de reducción de LONG (RSI) |
-| `REDUCE_SHORT` | 50.0 | Precio de reducción de SHORT (RSI) |
-| `MAX_POSICIONES` | 3 | Máximo de posiciones simultáneas |
-| `SLOT_FACTOR` | 1.0 | Factor de pirámide (1.0 = igual) |
-| `MODO_OPERACION` | `"limite_gtc"` | `"limit_post_only"` o `"limite_gtc"` |
+| `--rsi-period` | 14 | Período del cálculo RSI |
+| `--oversold-threshold` | 30.0 | Límite de sobreventa (abrir LONG) |
+| `--overbought-threshold` | 70.0 | Límite de sobrecompra (abrir SHORT) |
+| `--reduce-long` / `--reduce-short` | 50.0 | Precio de reducción de posiciones (RSI) |
+| `--max-posiciones` | 3 | Máximo de posiciones simultáneas |
+| `--slot-factor` | 1.0 | Factor de pirámide (1.0 = igual) |
+| `--modo-operacion` | `limit_post_only` | `limit_post_only` o `limite_gtc` |
 
 ### config_local.py
 
@@ -432,7 +452,7 @@ El dashboard (`backtest_dashboard.html`) es una aplicación web autónoma que vi
 
 1. Descargar datos históricos → scripts en `DB/`
 2. Ajustar parámetros → `config_local.py` y el lanzador
-3. Ejecutar backtest → `python Backtest_RSI_MeanReversion.py`
+3. Ejecutar backtest → `python Backtest.py --strategy rsi_wilder` (u optimizar antes con `Optimizador_RSI_*.py`)
 4. Ver resultados → abrir `backtest_results.json` o dashboard
 5. Analizar, ajustar parámetros y repetir
 

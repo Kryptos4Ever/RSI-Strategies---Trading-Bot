@@ -43,7 +43,7 @@ RESULTS_JSON = "backtest_results.json"
 # RANGO TEMPORAL
 # ══════════════════════════════════════════════════════════════════════════════
 FECHA_INICIO = '2021-11-10'  # Formato YYYY-MM-DD
-FECHA_FIN    = '2025-10-06'  # Formato YYYY-MM-DD
+FECHA_FIN    = '2026-08-10'  # Formato YYYY-MM-DD
 
 # ── Referencias rápidas de fechas útiles para backtesting ────────────────────
 #   Bottom Bear 2018  : '2018-12-10'   → Fin del mercado bajista 2018

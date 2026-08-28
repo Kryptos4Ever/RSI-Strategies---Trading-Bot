@@ -521,7 +521,8 @@ class SimulatedOrderBook(OrderBook):
 
 class SimulatedLimitOrderBook(SimulatedOrderBook):
     """
-    Simula órdenes límite Post-Only contra el rango de una vela.
+    Simula órdenes límite Post-Only contra el rango de una vela (alias para
+    SimulatedLimitPostOnlyOrderBook, mantiene compatibilidad con clientes existentes).
 
     Reglas:
       1. Post-Only check:
@@ -564,4 +565,73 @@ class SimulatedLimitOrderBook(SimulatedOrderBook):
         else:
             # La orden estuvo en libro pero no fue alcanzada → se cancela al cierre
             self._reject(order, "limit_not_reached")
+        return order
+
+
+SimulatedLimitPostOnlyOrderBook = SimulatedLimitOrderBook
+
+
+class SimulatedLimitGTCOrderBook(SimulatedOrderBook):
+    """
+    Modo LÍMITE GTC: Simula órdenes límite GTC contra el rango de una vela.
+    Sin restricción Post-Only: permite ejecución maker o taker según el rango.
+
+    Reglas:
+      BUY:
+        - Si open < limit_price → fill a open (taker: gap a favor, compra más barato)
+        - Si open >= limit_price y low <= limit_price → fill a limit_price (maker)
+        - Si open >= limit_price y low > limit_price → no fill
+      SELL:
+        - Si open > limit_price → fill a open (taker: gap a favor, vende más caro)
+        - Si open <= limit_price y high >= limit_price → fill a limit_price (maker)
+        - Si open <= limit_price y high < limit_price → no fill
+
+    Uso: llamar a set_candle(candle) ANTES de submit().
+    """
+
+    def __init__(self, commission_pct: float, max_posiciones: int) -> None:
+        super().__init__(commission_pct, max_posiciones)
+        self._candle_open: float = 0.0
+        self._candle_low: float = 0.0
+        self._candle_high: float = 0.0
+        self._n_taker_fills: int = 0
+        self._n_maker_fills: int = 0
+
+    def set_candle(self, candle: Candle) -> None:
+        """Establece la vela actual contra la cual validar órdenes."""
+        self._candle_open = candle.open
+        self._candle_low = candle.low
+        self._candle_high = candle.high
+
+    @property
+    def gtc_stats(self) -> dict:
+        return {
+            "taker_fills": self._n_taker_fills,
+            "maker_fills": self._n_maker_fills,
+        }
+
+    def submit(self, order: Order, initial_candle_open: Optional[float] = None) -> Order:
+        ref_open = initial_candle_open if initial_candle_open is not None else self._candle_open
+        if order.side == OrderSide.BUY:
+            if order.price > ref_open:
+                # Taker fill: gap a favor, ejecuta a open. Precio señal se mantiene en order.price
+                self._execute_buy(order, execution_price=ref_open)
+                self._n_taker_fills += 1
+            elif self._candle_low <= order.price:
+                # Maker fill: ejecuta al precio límite
+                self._execute_buy(order, execution_price=order.price)
+                self._n_maker_fills += 1
+            else:
+                self._reject(order, "limit_not_reached")
+        else:
+            if order.price < ref_open:
+                # Taker fill: gap a favor, ejecuta a open
+                self._execute_sell(order, execution_price=ref_open)
+                self._n_taker_fills += 1
+            elif self._candle_high >= order.price:
+                # Maker fill: ejecuta al precio límite
+                self._execute_sell(order, execution_price=order.price)
+                self._n_maker_fills += 1
+            else:
+                self._reject(order, "limit_not_reached")
         return order

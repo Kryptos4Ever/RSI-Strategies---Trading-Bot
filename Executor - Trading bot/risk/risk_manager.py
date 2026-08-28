@@ -183,6 +183,11 @@ class RiskManager:
         Itera sobre TODAS las posiciones (O(n) con n = número de posiciones).
         Si alguna tiene pérdida >= stop_loss_pct, retorna el motivo
         (SELL de emergencia). None si no aplica.
+
+        CORRECCIÓN de dirección (2026-08-09):
+        - LONG:  pierde si el precio BAJA  → drawdown = (avg_entry - current) / avg_entry * 100
+        - SHORT: pierde si el precio SUBE  → drawdown = (current - avg_entry) / avg_entry * 100
+        Antes se calculaba siempre como LONG, lo que era incorrecto para shorts.
         """
         if self._stop_loss_pct <= 0:
             return None
@@ -194,7 +199,16 @@ class RiskManager:
         for pos in positions:
             if pos.total_btc <= 0 or pos.avg_entry_price <= 0:
                 continue
-            drawdown = (pos.avg_entry_price - current_price) / pos.avg_entry_price * 100
+            direction = getattr(pos, 'direction', None)
+            is_long = (
+                direction is None
+                or (hasattr(direction, 'name') and direction.name == "LONG")
+                or direction == "LONG"
+            )
+            if is_long:
+                drawdown = (pos.avg_entry_price - current_price) / pos.avg_entry_price * 100
+            else:
+                drawdown = (current_price - pos.avg_entry_price) / pos.avg_entry_price * 100
             if drawdown >= self._stop_loss_pct:
                 return (
                     f"stop_loss_individual({drawdown:.2f}% >= {self._stop_loss_pct}%)"

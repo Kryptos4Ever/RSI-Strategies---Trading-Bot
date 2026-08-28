@@ -33,13 +33,13 @@ log = get_logger("backtest_rsi_wilder_runner")
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Parámetros de la estrategia ──────────────────────────────────────────────
-RSI_PERIOD            = 11
-OVERSOLD_THRESHOLD    = 28.0
-OVERBOUGHT_THRESHOLD  = 68.0
-REDUCE_LONG           = 52.0
-REDUCE_SHORT          = 40.0
-MAX_POSICIONES        = 1
-SLOT_FACTOR           = 1.0
+RSI_PERIOD            = 13
+OVERSOLD_THRESHOLD    = 27
+OVERBOUGHT_THRESHOLD  = 67
+REDUCE_LONG           = 49
+REDUCE_SHORT          = 46
+MAX_POSICIONES        = 3
+SLOT_FACTOR           = 1.5
 MODO_OPERACION        = "limite_gtc"   # "limit_post_only" o "limite_gtc"
 
 # ── Los siguientes parámetros se toman directamente de config_local.py:

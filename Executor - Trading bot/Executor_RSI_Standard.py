@@ -155,11 +155,23 @@ def _build_actors_for_mode(mode: str, max_posiciones: int, slot_factor: float, o
     # ── 3. OrderBook ───────────────────────────────────────────────────
     commission_pct = float(secrets("PAPPER_COMMISSION_PCT", secrets("COMMISSION_PCT", "0.1")))
     if is_papper:
-        from actors.papper.papper_order_book import SimulatedOrderBook
-        ob = SimulatedOrderBook(
-            commission_pct=commission_pct,
-            max_posiciones=max_posiciones,
+        # Usar order book con validación de rango de vela según el modo de operación,
+        # replicando la mecánica del backtest (SimulatedLimitPostOnlyOrderBook / GTC).
+        from actors.papper.papper_order_book import (
+            SimulatedLimitPostOnlyOrderBook,
+            SimulatedLimitGTCOrderBook,
         )
+        if order_type == "limit_post_only":
+            ob = SimulatedLimitPostOnlyOrderBook(
+                commission_pct=commission_pct,
+                max_posiciones=max_posiciones,
+            )
+        else:
+            # "limit_gtc" (default) o "market" → GTC simulado con validación de rango
+            ob = SimulatedLimitGTCOrderBook(
+                commission_pct=commission_pct,
+                max_posiciones=max_posiciones,
+            )
     elif is_hyperliquid:
         if hl_testnet:
             from actors.hyperliquid_testnet.hyperliquid_testnet_order_book import HyperliquidOrderBook

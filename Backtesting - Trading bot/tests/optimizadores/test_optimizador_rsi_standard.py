@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -168,6 +168,7 @@ def run_individual_backtest(
     # ── Loop principal ─────────────────────────────────────────
     strategy.on_start(wallet)
     last_candle = None
+    portfolio_history: List[float] = []
 
     for candle in candles:
         last_candle = candle
@@ -277,6 +278,9 @@ def run_individual_backtest(
 
                 risk.update_peak(wallet.portfolio_value(candle.close))
 
+        # Registrar valor del portfolio al cierre de la vela (para Sharpe/DD)
+        portfolio_history.append(wallet.portfolio_value(candle.close))
+
     strategy.on_stop(wallet)
 
     # ── Métricas finales (como BacktestEngine._build_summary) ──
@@ -290,22 +294,24 @@ def run_individual_backtest(
     precio_inicial = candles[0].open if candles else precio_final
     bh_pnl = (precio_final / precio_inicial - 1) * 100 if precio_inicial > 0 else 0.0
 
-    # Sharpe y MaxDD (como BacktestEngine._calc_sharpe_maxdd)
+    # Sharpe y MaxDD (usando el historial real del portfolio vela a vela)
     try:
-        port_arr = np.array([
-            wallet.portfolio_value(c.close) for c in candles
-        ], dtype=np.float64)
+        if len(portfolio_history) >= 2:
+            port_arr = np.array(portfolio_history, dtype=np.float64)
 
-        peak = np.maximum.accumulate(port_arr)
-        dd = (port_arr - peak) / np.where(peak == 0, 1, peak) * 100
-        max_dd = float(dd.min())
+            peak = np.maximum.accumulate(port_arr)
+            dd = (port_arr - peak) / np.where(peak == 0, 1, peak) * 100
+            max_dd = float(dd.min())
 
-        returns = np.diff(port_arr) / np.where(port_arr[:-1] == 0, 1, port_arr[:-1])
-        if len(returns) >= 2 and np.std(returns) > 0:
-            tf_seconds = 3600  # 1H
-            ann_factor = np.sqrt(365 * 24 * 3600 / tf_seconds)
-            sharpe = float(np.mean(returns) / np.std(returns) * ann_factor)
+            returns = np.diff(port_arr) / np.where(port_arr[:-1] == 0, 1, port_arr[:-1])
+            if len(returns) >= 2 and np.std(returns) > 0:
+                tf_seconds = 3600  # 1H
+                ann_factor = np.sqrt(365 * 24 * 3600 / tf_seconds)
+                sharpe = float(np.mean(returns) / np.std(returns) * ann_factor)
+            else:
+                sharpe = 0.0
         else:
+            max_dd = 0.0
             sharpe = 0.0
     except Exception:
         max_dd = 0.0
@@ -512,8 +518,146 @@ class TestOptimizadorRSIStandard:
         completed, results, top20 = chk2.load()
 
         assert len(completed) == 2, f"Se esperaban 2 hashes, hay {len(completed)}"
-        assert len(results) == 1, "Debería cargarse el results guardado"
-        assert "dummy" in results, "Debería contener la clave 'dummy'"
+        # Desde v3, save() NO guarda los results individuales (solo hashes + top20)
+        assert results == {}, "Desde v3 los results individuales no se guardan"
+
+class TestPruningDetector:
+    """
+    Verifica la lógica de decisión del PruningDetector.
+    Usa un mock wallet para aislar la lógica del detector.
+    """
+
+    class _MockWallet:
+        """Wallet mínima que solo expone portfolio_value()."""
+        def __init__(self, value: float):
+            self._value = value
+
+        def portfolio_value(self, current_price: float) -> float:
+            return self._value
+
+    def _make_detector(self, **kwargs) -> Any:
+        from Optimizador_RSI_Standard import PruningDetector
+        return PruningDetector(**kwargs)
+
+    def test_no_prune_cuando_portfolio_sano(self):
+        """Portfolio por encima del umbral y del ratio B&H → NO prunar."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        wallet = self._MockWallet(value=1000.0)  # 100% del capital
+        # current_price=100, first_close=100 → B&H = 1000, ratio 0.85 → 850
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=100.0,
+            candle_idx=50, total_candles=100, first_close=100.0,
+        ) is False
+
+    def test_prune_por_umbral_absoluto(self):
+        """Portfolio < 90% del capital inicial → prunar."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        wallet = self._MockWallet(value=850.0)  # 85% del capital
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=100.0,
+            candle_idx=50, total_candles=100, first_close=100.0,
+        ) is True
+
+    def test_prune_por_ratio_bh(self):
+        """Portfolio por debajo del 85% del B&H → prunar."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        # B&H = (1000/100)*200 = 2000; 85% = 1700
+        # Portfolio = 1500 (75% del capital, pero > 90% del capital)
+        # → No pruna por umbral absoluto, pero sí por ratio B&H
+        wallet = self._MockWallet(value=1500.0)
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=200.0,
+            candle_idx=50, total_candles=100, first_close=100.0,
+        ) is True
+
+    def test_no_prune_antes_del_after_pct(self):
+        """Antes del % mínimo de velas → nunca prunar."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        wallet = self._MockWallet(value=100.0)  # 10% del capital (muy mal)
+        # candle_idx=10, total=100 → 10 < 15 → no evaluar
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=100.0,
+            candle_idx=10, total_candles=100, first_close=100.0,
+        ) is False
+
+    def test_no_prune_en_limite_exacto(self):
+        """Portfolio == threshold exacto → NO prunar (comparación estricta <)."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        wallet = self._MockWallet(value=900.0)  # 90% exacto
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=100.0,
+            candle_idx=50, total_candles=100, first_close=100.0,
+        ) is False
+
+    def test_no_prune_si_bh_ratio_exacto(self):
+        """Portfolio == bh_ratio * B&H exacto → NO prunar (comparación estricta <)."""
+        detector = self._make_detector(threshold=0.90, after_pct=0.15, bh_ratio=0.85)
+        # B&H = (1000/100)*200 = 2000; 85% = 1700
+        wallet = self._MockWallet(value=1700.0)  # 170% del capital, == 85% B&H
+        assert detector.should_prune(
+            wallet, initial_capital=1000.0, current_price=200.0,
+            candle_idx=50, total_candles=100, first_close=100.0,
+        ) is False
+
+
+class TestOptimizadorNoPruneBuenosResultados:
+    """
+    Verifica que una combinación con PNL positivo NO sea marcada como pruned
+    por el PruningDetector en el punto de evaluación.
+    """
+
+    def test_combo_rentable_no_se_pruna(self, synthetic_candles):
+        """
+        Ejecuta una combinación con pruning DESACTIVADO (completa) y verifica
+        que si el PNL final es positivo, el detector no la habría prunado
+        en el punto de evaluación (al 20% de las velas).
+        """
+        from Optimizador_RSI_Standard import PruningDetector
+
+        # Usar una combinación con tendencia alcista en las velas sintéticas
+        combo = {
+            "RSI_PERIOD": 10,
+            "OVERSOLD_THRESHOLD": 25.0,
+            "OVERBOUGHT_THRESHOLD": 75.0,
+            "REDUCE_LONG": 40.0,
+            "REDUCE_SHORT": 60.0,
+            "MAX_POSICIONES": 1,
+            "SLOT_FACTOR": 1.0,
+            "MODO_OPERACION": "limit_post_only",
+        }
+
+        # Ejecutar backtest completo (sin pruning)
+        summary = run_individual_backtest(synthetic_candles, combo)
+        assert summary, "Backtest falló"
+
+        # Si el PNL es positivo, verificar que el detector no prunaría
+        # en el punto de evaluación (20% de las velas)
+        if summary["pnl_pct"] > 0:
+            detector = PruningDetector(
+                threshold=0.90, after_pct=0.15, bh_ratio=0.85
+            )
+
+            # Simular el estado de la wallet al 20% de las velas
+            # Usamos el portfolio final como proxy (si es positivo, el
+            # portfolio al 20% debería ser razonable)
+            wallet = TestPruningDetector._MockWallet(
+                value=summary["portfolio_value_final"]
+            )
+
+            # El detector NO debería prunar si el portfolio final es > 90% del capital
+            should_prune = detector.should_prune(
+                wallet,
+                initial_capital=1000.0,
+                current_price=synthetic_candles[-1].close,
+                candle_idx=int(len(synthetic_candles) * 0.2),
+                total_candles=len(synthetic_candles),
+                first_close=synthetic_candles[0].open,
+            )
+            assert not should_prune, (
+                f"Combo con PNL positivo ({summary['pnl_pct']:.2f}%) "
+                f"fue marcado como pruned"
+            )
+
 
 if __name__ == "__main__":
     from tests._direct_runner import run_current_test_file

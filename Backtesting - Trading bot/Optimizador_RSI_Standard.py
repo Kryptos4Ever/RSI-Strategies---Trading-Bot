@@ -40,6 +40,25 @@ from support.types import Candle, PositionDirection, Signal, SignalType, HOLD_LI
 
 log = get_logger("optimizador_rsi_standard")
 
+# ── Control de consola para reemplazar el bloque TOP 20 ─────────────────────
+_top20_printed_lines = 0  # Líneas del último bloque TOP 20 impreso (sin contar la barra de progreso)
+
+
+def _enable_ansi() -> None:
+    """Habilita códigos ANSI en consolas Windows."""
+    if os.name == "nt":
+        os.system("")
+
+
+def _clear_console_lines(n: int) -> None:
+    """Borra n líneas hacia arriba en la consola usando códigos ANSI."""
+    if n <= 0:
+        return
+    # Subir n líneas y borrarlas
+    sys.stdout.write("\033[F" * n)
+    sys.stdout.write("\033[J")
+    sys.stdout.flush()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURACIÓN DEL OPTIMIZADOR  (Editar aquí antes de ejecutar)
@@ -55,12 +74,12 @@ AUTO_SAVE_INTERVAL  = 50         # Guardar checkpoint cada N combinaciones
 
 # ── Pruning (early stopping) ─────────────────────────────────────────────────
 PRUNE_ENABLED       = True
-PRUNE_AFTER_PCT     = 0.15       # % de velas antes de empezar a evaluar
+PRUNE_AFTER_PCT     = 0.20       # % de velas antes de empezar a evaluar
 PRUNE_THRESHOLD     = 0.90       # Abortar si portfolio < 90% del capital inicial
-PRUNE_BH_RATIO      = 0.85       # Abortar si está 5% peor que Buy & Hold
+PRUNE_BH_RATIO      = 0.50       # Abortar si está 50% peor que Buy & Hold
 
 # ── Filtros de resultados ────────────────────────────────────────────────────
-MIN_TRADES          = 10         # Ignorar estrategias con menos operaciones
+MIN_TRADES          = 100         # Ignorar estrategias con menos operaciones
 TOP_N               = 20         # Tamaño del ranking
 
 # ── Archivos de salida (separados por estrategia) ─────────────────────────────
@@ -69,13 +88,13 @@ TOP20_CSV_PATH      = "optimizer_top20_rsi_standard.csv"
 
 # ── Rangos de parámetros a barrer ────────────────────────────────────────────
 PARAM_RANGES = {
-    "RSI_PERIOD":            [8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30],
-    "OVERSOLD_THRESHOLD":    [25.0, 27.5, 30.0, 32.5, 35.0, 40.0],
-    "OVERBOUGHT_THRESHOLD":  [60, 65.0, 67.5, 70.0, 72.5, 75.0],
-    "REDUCE_LONG":           [40.0, 42.5, 50.0, 52.5, 60.0],
-    "REDUCE_SHORT":          [40.0, 42.5, 50.0, 52.5, 60.0],
+    "RSI_PERIOD":            [8, 9, 10, 11, 12, 13, 14, 15],
+    "OVERSOLD_THRESHOLD":    [20, 22, 24, 26, 28, 30],
+    "OVERBOUGHT_THRESHOLD":  [60, 62, 64, 66, 68, 70],
+    "REDUCE_LONG":           [40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60],
+    "REDUCE_SHORT":          [40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60],
     "MAX_POSICIONES":        [1, 2, 3],
-    "SLOT_FACTOR":           [1.0, 1.2, 1.5, 1.7, 2.0],
+    "SLOT_FACTOR":           [1.0, 1.5],
     "MODO_OPERACION":        ["limite_gtc", "limit_post_only"],
 }
 
@@ -130,8 +149,14 @@ class ParameterGrid:
                 self._combos.append(combo)
                 self._hash_set.add(combo["_hash"])
                 return
-            for v in values[idx]:
-                current[keys[idx]] = v
+            k = keys[idx]
+            # Si MAX_POSICIONES=1, SLOT_FACTOR no tiene efecto → solo usar el primer valor
+            if k == "SLOT_FACTOR" and current.get("MAX_POSICIONES") == 1:
+                values_iter = [values[idx][0]]
+            else:
+                values_iter = values[idx]
+            for v in values_iter:
+                current[k] = v
                 _cartesian(idx + 1, current)
 
         _cartesian(0, {})
@@ -172,9 +197,16 @@ class RSICache:
     """
     Precalcula RSI estándar para cada período único sobre todas las velas.
     Almacena valores RSI y estados del engine para poder llamar a price_for_rsi().
+
+    IMPORTANTE (warmup correcto): para que el optimizador coincida EXACTAMENTE
+    con el backtest individual, cada período usa `period + 20` velas de warmup
+    inmediatamente anteriores al rango (igual que BacktestEngine._load_warmup_candles).
+    La caché se construye por período con esa ventana específica, NO con un
+    warmup global único.
     """
 
-    def __init__(self, candles: List[Candle], periods: List[int]):
+    def __init__(self, warmup_candles: List[Candle], candles: List[Candle], periods: List[int]):
+        self.warmup_candles = warmup_candles
         self.candles = candles
         self.periods = sorted(set(periods))
         self._rsi_values: Dict[int, List[Optional[float]]] = {}
@@ -187,14 +219,19 @@ class RSICache:
             self._build_for_period(period)
 
     def _build_for_period(self, period: int) -> None:
-        """Construye la caché para un período específico."""
+        """Construye la caché para un período específico con su warmup correcto."""
         from indicadores.rsi_standard import StandardRSIEngine
+
+        # Usar exactamente `period + 20` velas de warmup (como BacktestEngine)
+        n_warm = period + 20
+        warm_used = self.warmup_candles[-n_warm:] if len(self.warmup_candles) > n_warm else self.warmup_candles
+        period_candles = warm_used + self.candles
 
         engine = StandardRSIEngine(period=period)
         values: List[Optional[float]] = []
         snaps: List[RSIEngineSnapshot] = []
 
-        for c in self.candles:
+        for c in period_candles:
             rsi = engine.update(c.close)
             values.append(rsi)
             snaps.append(RSIEngineSnapshot(
@@ -650,13 +687,19 @@ class CheckpointManager:
         self._evaluated_count += 1
 
     def save(self, results: Dict, top20: list) -> None:
-        """Guarda el checkpoint a disco."""
+        """
+        Guarda el checkpoint a disco.
+
+        IMPORTANTE: NO se guardan los `results` individuales (pueden ser
+        decenas de miles de summaries → JSON enorme que falla al escribirse).
+        Solo se guardan los hashes completados y el top20, que es lo necesario
+        para reanudar y reconstruir el leaderboard.
+        """
         payload = {
-            "version": 2,
+            "version": 3,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "total_evaluated": self._evaluated_count,
             "completed_hashes": list(self._completed_hashes),
-            "results": results,
             "top20": top20,
         }
         temp_path = self.path + ".tmp"
@@ -666,6 +709,13 @@ class CheckpointManager:
             os.replace(temp_path, self.path)
         except Exception as e:
             log.error("Error guardando checkpoint", error=str(e))
+            # Fallback: intentar guardar sin indent (más compacto)
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, default=str)
+                os.replace(temp_path, self.path)
+            except Exception as e2:
+                log.error("Error guardando checkpoint (fallback)", error=str(e2))
 
     def should_auto_save(self) -> bool:
         """Determina si es momento de guardar automáticamente."""
@@ -880,6 +930,9 @@ def worker_chunk(chunk_data: tuple) -> List[Tuple[Dict, Dict, float]]:
 
                     risk.update_peak(wallet.portfolio_value(candle.close))
 
+            # Registrar valor del portfolio al cierre de la vela (para Sharpe/DD)
+            portfolio_history.append(wallet.portfolio_value(candle.close))
+
             # Pruning check
             if prune_config.get("enabled", True):
                 should_prune = pruning.should_prune(
@@ -908,22 +961,24 @@ def worker_chunk(chunk_data: tuple) -> List[Tuple[Dict, Dict, float]]:
         precio_inicial = candles[0].open if candles else precio_final
         bh_pnl = (precio_final / precio_inicial - 1) * 100 if precio_inicial > 0 else 0.0
 
-        # Sharpe y MaxDD
+        # Sharpe y MaxDD (usando el historial real del portfolio vela a vela)
         try:
-            port_arr = np.array([
-                wallet.portfolio_value(c.close) for c in candles
-            ], dtype=np.float64)
+            if len(portfolio_history) >= 2:
+                port_arr = np.array(portfolio_history, dtype=np.float64)
 
-            peak = np.maximum.accumulate(port_arr)
-            dd = (port_arr - peak) / np.where(peak == 0, 1, peak) * 100
-            max_dd = float(dd.min())
+                peak = np.maximum.accumulate(port_arr)
+                dd = (port_arr - peak) / np.where(peak == 0, 1, peak) * 100
+                max_dd = float(dd.min())
 
-            returns = np.diff(port_arr) / np.where(port_arr[:-1] == 0, 1, port_arr[:-1])
-            if len(returns) >= 2 and np.std(returns) > 0:
-                tf_seconds = 3600  # Asumimos 1H
-                ann_factor = np.sqrt(365 * 24 * 3600 / tf_seconds)
-                sharpe = float(np.mean(returns) / np.std(returns) * ann_factor)
+                returns = np.diff(port_arr) / np.where(port_arr[:-1] == 0, 1, port_arr[:-1])
+                if len(returns) >= 2 and np.std(returns) > 0:
+                    tf_seconds = BacktestEngine._timeframe_to_seconds(config.get("primary_timeframe", "1h"))
+                    ann_factor = np.sqrt(365 * 24 * 3600 / tf_seconds)
+                    sharpe = float(np.mean(returns) / np.std(returns) * ann_factor)
+                else:
+                    sharpe = 0.0
             else:
+                max_dd = 0.0
                 sharpe = 0.0
         except Exception:
             max_dd = 0.0
@@ -1046,8 +1101,7 @@ def run_single_combo_lightweight(
 
     # Crear o usar caché RSI (con warmup incluido)
     if rsi_cache is None:
-        cache_candles = warmup_candles + candles
-        rsi_cache = RSICache(cache_candles, [params["RSI_PERIOD"]])
+        rsi_cache = RSICache(warmup_candles, candles, [params["RSI_PERIOD"]])
 
     # Serializar datos para el worker
     chunk_data = (
@@ -1087,6 +1141,9 @@ def run_single_combo_lightweight(
 def main() -> None:
     """Punto de entrada principal del optimizador."""
     t_start = time.time()
+
+    # Habilitar códigos ANSI en Windows para reemplazar el bloque TOP 20
+    _enable_ansi()
 
     # ── Calcular workers ─────────────────────────────────────────────────
     import os as _os
@@ -1171,8 +1228,7 @@ def main() -> None:
 
     # ── Precalcular RSI Cache (con warmup incluido) ──────────────────────
     print("  Precalculando RSI cache...")
-    cache_candles = warmup_candles + candles
-    rsi_cache = RSICache(cache_candles, unique_periods)
+    rsi_cache = RSICache(warmup_candles, candles, unique_periods)
     rsi_cache_data = _serialize_rsi_cache(rsi_cache)
     print(f"  Períodos RSI      : {unique_periods}")
 
@@ -1193,7 +1249,10 @@ def main() -> None:
         grouped[c["RSI_PERIOD"]].append(c)
 
     chunks = []
-    chunk_size = max(1, len(pendientes) // (n_workers * 4))  # ~4 chunks por worker
+    # Más chunks → progreso más frecuente y visible en consola.
+    # Con ~20 chunks por worker, la barra de progreso avanza cada pocos minutos
+    # en lugar de parecer congelada durante horas con chunks gigantes.
+    chunk_size = max(1, len(pendientes) // (n_workers * 20))
     for period, combos in grouped.items():
         for i in range(0, len(combos), chunk_size):
             chunk = combos[i:i + chunk_size]
@@ -1291,6 +1350,10 @@ def main() -> None:
     lb.save_json(TOP20_JSON_PATH)
     lb.save_csv(TOP20_CSV_PATH)
 
+    # Limpiar el último bloque TOP 20 actualizado + la barra de progreso
+    if _top20_printed_lines > 0:
+        _clear_console_lines(_top20_printed_lines + 1)
+
     elapsed_total = time.time() - t_start
     print("\n" + "═" * 72)
     print("  OPTIMIZACIÓN COMPLETADA")
@@ -1311,7 +1374,7 @@ def main() -> None:
 
 
 def _print_progress(evaluated: int, total: int, pruned: int, errors: int, elapsed: float) -> None:
-    """Muestra barra de progreso en consola."""
+    """Muestra barra de progreso en consola, sobrescribiendo la línea anterior."""
     pct = (evaluated / total * 100) if total > 0 else 0
     bar_len = 30
     filled = int(bar_len * evaluated / total) if total > 0 else 0
@@ -1324,8 +1387,12 @@ def _print_progress(evaluated: int, total: int, pruned: int, errors: int, elapse
     elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
     remaining_str = time.strftime("%H:%M:%S", time.gmtime(remaining))
 
+    # Subir 1 línea, volver al inicio y limpiar antes de reescribir la barra.
+    # Esto garantiza que la barra se sobrescriba correctamente en Windows,
+    # incluso cuando se combina con los códigos ANSI de _clear_console_lines.
+    sys.stdout.write("\033[F\r\033[J")
     print(
-        f"\r  Progreso: [{bar}] {evaluated}/{total} ({pct:.1f}%)  "
+        f"  Progreso: [{bar}] {evaluated}/{total} ({pct:.1f}%)  "
         f"Tiempo: {elapsed_str} | Restante: {remaining_str}  "
         f"Pruned: {pruned} | Errores: {errors}   ",
         end="", flush=True,
@@ -1333,12 +1400,23 @@ def _print_progress(evaluated: int, total: int, pruned: int, errors: int, elapse
 
 
 def _print_top20(lb: Top20Leaderboard, final: bool = False) -> None:
-    """Muestra el top 20 en consola."""
+    """Muestra el top 20 en consola, reemplazando el bloque anterior."""
+    global _top20_printed_lines
+
     top20 = lb.get_top20()
     if not top20:
         return
 
-    label = "TOP 20 FINAL" if final else "TOP 20 (actualizado)"
+    # Si no es el final, borrar el bloque TOP 20 anterior + la barra de progreso
+    if not final and _top20_printed_lines > 0:
+        # +1 por la barra de progreso que está debajo del bloque
+        _clear_console_lines(_top20_printed_lines + 1)
+
+    if final:
+        label = "TOP 20 FINAL"
+    else:
+        label = f"TOP 20 (actualizado) - {time.strftime('%Y-%m-%d %H:%M:%S')}"
+
     print(f"\n  ─── {label} ───────────────────────────────────")
     for i, entry in enumerate(top20, 1):
         p = entry["params"]
@@ -1355,6 +1433,9 @@ def _print_top20(lb: Top20Leaderboard, final: bool = False) -> None:
             f"Trades={entry['total_trades']}"
         )
     print("  ───────────────────────────────────────────────")
+
+    # Registrar cuántas líneas ocupa el bloque (1 header + N filas + 1 footer)
+    _top20_printed_lines = 2 + len(top20)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

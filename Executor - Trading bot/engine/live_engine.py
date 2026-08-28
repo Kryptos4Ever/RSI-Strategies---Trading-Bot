@@ -687,6 +687,18 @@ class LiveEngine:
             except Exception as e:
                 log.warning("Error cancelando órdenes en nueva vela", error=str(e))
 
+        # 1b. Programar Dead Man's Switch (modos reales): si el proceso se cae
+        #     antes del próximo evento, las órdenes límite se cancelan solas.
+        #     Se programa para el cierre de la vela actual (timestamp del próximo
+        #     candle), garantizando que las órdenes de esta vela queden cubiertas.
+        if self._is_real and hasattr(self.ob, 'set_dead_mans_switch'):
+            try:
+                dms_at_ms = (candle.ts + self.candle_seconds) * 1000
+                self.ob.set_dead_mans_switch(dms_at_ms)
+                log.info("Dead Man's Switch programado", cancel_at_ms=dms_at_ms)
+            except Exception as e:
+                log.warning("Error programando Dead Man's Switch", error=str(e))
+
         # 2. Resetear estado de órdenes pendientes
         self._pending_buy_price = None
         self._pending_sell_price = None
@@ -711,51 +723,161 @@ class LiveEngine:
         if overlay_row:
             self._candle_overlays[candle.ts] = overlay_row
 
+        # 4b. Establecer la vela actual en el order book (para simulaciones con
+        #     validación de rango, como SimulatedLimitPostOnlyOrderBook/GTC en papper).
+        #     Es el equivalente a set_candle() que hace BacktestEngine en cada vela.
+        if hasattr(self.ob, 'set_candle'):
+            try:
+                self.ob.set_candle(candle)
+            except Exception as e:
+                log.warning("Error al llamar set_candle en order book", error=str(e))
+
         # 5. Despachar cada señal por SignalType (OPEN/ADD/REDUCE/CLOSE de LONG/SHORT)
         #    usando los métodos de alto nivel del order_book.
         limits = {}
-        for sig in raw_signals:
-            if not sig.is_actionable:
-                continue
-            sig.price = self.ob.round_price(sig.price)
-            st = sig.signal_type
-            direction = PositionDirection.LONG if st in (
+
+        # ── Clasificar señales para decidir batch vs individual ─────────────
+        #  - entry_signals: OPEN/ADD de una dirección (necesitan un slot libre)
+        #  - exit_signals:  REDUCE/CLOSE de la misma dirección que la posición
+        #  Reglas:
+        #    * MAX_POSICIONES == 1: NUNCA batch. Las órdenes se despachan
+        #      individualmente y secuencialmente (los guards de max_posiciones
+        #      y la lógica de pendientes aseguran que una orden de apertura
+        #      espere a que un cierre libere el slot).
+        #    * MAX_POSICIONES > 1: se puede hacer batch SOLO entre un OPEN/ADD
+        #      y un REDUCE/CLOSE de la MISMA dirección (ej: ADD_LONG + REDUCE_LONG).
+        #      NUNCA se agrupan apertura y cierre de direcciones opuestas.
+        actionable = [s for s in raw_signals if s.is_actionable]
+        pos_count = self.wallet.positions_count
+
+        # Detectar si hay un par batch candidato (1 entrada + 1 salida, misma dir)
+        batch_buy = None
+        batch_sell = None
+        use_batch = False
+        if self.max_posiciones > 1 and hasattr(self.ob, 'submit_bulk_async') and len(actionable) == 2:
+            a, b = actionable
+            st_a, st_b = a.signal_type, b.signal_type
+            dir_a = PositionDirection.LONG if st_a in (
                 SignalType.OPEN_LONG, SignalType.ADD_LONG,
                 SignalType.REDUCE_LONG, SignalType.CLOSE_LONG,
             ) else PositionDirection.SHORT
+            dir_b = PositionDirection.LONG if st_b in (
+                SignalType.OPEN_LONG, SignalType.ADD_LONG,
+                SignalType.REDUCE_LONG, SignalType.CLOSE_LONG,
+            ) else PositionDirection.SHORT
+            es_a = st_a in (SignalType.OPEN_LONG, SignalType.ADD_LONG,
+                            SignalType.OPEN_SHORT, SignalType.ADD_SHORT)
+            es_b = st_b in (SignalType.OPEN_LONG, SignalType.ADD_LONG,
+                            SignalType.OPEN_SHORT, SignalType.ADD_SHORT)
+            # Un par (entrada, salida) de la MISMA dirección → batch
+            if dir_a == dir_b and es_a != es_b:
+                if es_a:
+                    batch_buy, batch_sell = a, b
+                else:
+                    batch_buy, batch_sell = b, a
+                use_batch = True
 
-            # Guardar límites para dashboard (buy/sell según lado)
-            s = sig.to_order_side()
-            if s == "BUY":
-                limits["buy_limit"] = sig.price
-                limits["buy_reason"] = sig.reason
-                self._print_event(f"    → Buy Limit: ${sig.price:,.2f} ({sig.reason})")
-            elif s == "SELL":
-                limits["sell_limit"] = sig.price
-                limits["sell_reason"] = sig.reason
-                self._print_event(f"    → Sell Limit: ${sig.price:,.2f} ({sig.reason})")
+        if use_batch:
+            # ── Modo batch (solo MAX_POSICIONES > 1 y par misma dirección) ──
+            for sig in (batch_buy, batch_sell):
+                sig.price = self.ob.round_price(sig.price)
+                s = sig.to_order_side()
+                if s == "BUY":
+                    limits["buy_limit"] = sig.price
+                    limits["buy_reason"] = sig.reason
+                elif s == "SELL":
+                    limits["sell_limit"] = sig.price
+                    limits["sell_reason"] = sig.reason
+                self._print_event(f"    → {s} Limit: ${sig.price:,.2f} ({sig.reason})")
 
-            # Ejecutar la operación según el tipo de señal
-            if st in (SignalType.OPEN_LONG, SignalType.OPEN_SHORT):
-                await asyncio.to_thread(
-                    self.ob.open_position, direction, sig.price, self.wallet,
-                    candle.ts, None, st.value,
+            # Construir órdenes de alto nivel para el batch
+            buy_order = None
+            sell_order = None
+            if batch_buy.signal_type in (SignalType.OPEN_LONG, SignalType.ADD_LONG):
+                buy_order = await asyncio.to_thread(
+                    self.ob.open_position, PositionDirection.LONG, batch_buy.price,
+                    self.wallet, candle.ts, None, batch_buy.signal_type.value,
                 )
-            elif st in (SignalType.ADD_LONG, SignalType.ADD_SHORT):
-                await asyncio.to_thread(
-                    self.ob.add_position, direction, sig.price, self.wallet,
-                    candle.ts, None, st.value,
+            elif batch_buy.signal_type in (SignalType.OPEN_SHORT, SignalType.ADD_SHORT):
+                buy_order = await asyncio.to_thread(
+                    self.ob.add_position, PositionDirection.SHORT, batch_buy.price,
+                    self.wallet, candle.ts, None, batch_buy.signal_type.value,
                 )
-            elif st in (SignalType.REDUCE_LONG, SignalType.REDUCE_SHORT):
-                await asyncio.to_thread(
-                    self.ob.reduce_position, direction, sig.price, self.wallet,
-                    candle.ts, None, st.value,
+
+            if batch_sell.signal_type in (SignalType.REDUCE_LONG, SignalType.CLOSE_LONG):
+                sell_order = await asyncio.to_thread(
+                    self.ob.reduce_position, PositionDirection.LONG, batch_sell.price,
+                    self.wallet, candle.ts, None, batch_sell.signal_type.value,
                 )
-            elif st in (SignalType.CLOSE_LONG, SignalType.CLOSE_SHORT):
-                await asyncio.to_thread(
-                    self.ob.close_position, direction, sig.price, self.wallet,
-                    candle.ts, None, st.value,
+            elif batch_sell.signal_type in (SignalType.REDUCE_SHORT, SignalType.CLOSE_SHORT):
+                sell_order = await asyncio.to_thread(
+                    self.ob.close_position, PositionDirection.SHORT, batch_sell.price,
+                    self.wallet, candle.ts, None, batch_sell.signal_type.value,
                 )
+
+            # Enviar batch atómico (solo modos reales con submit_bulk_async)
+            await self.ob.submit_bulk_async(buy_order, sell_order, self.session)
+
+            # Actualizar wallet si alguno se llenó inmediatamente
+            for order in (buy_order, sell_order):
+                if order and order.is_filled and order.trade:
+                    self.wallet.update(order.trade)
+                    self.risk.on_trade_executed()
+                    if order.side == OrderSide.BUY:
+                        self._daily_buys += 1
+                    else:
+                        self._daily_sells += 1
+                elif order and order.is_pending_limit and order.exchange_oid is not None:
+                    self._pending_limit_orders[order.exchange_oid] = {
+                        "order": order,
+                        "side": order.side.value,
+                        "price": order.price,
+                        "reason": order.signal_type,
+                        "candle_ts": candle.ts,
+                        "ts_placed": int(time.time()),
+                    }
+        else:
+            # ── Modo individual (por defecto y siempre en MAX_POSICIONES == 1) ──
+            for sig in actionable:
+                sig.price = self.ob.round_price(sig.price)
+                st = sig.signal_type
+                direction = PositionDirection.LONG if st in (
+                    SignalType.OPEN_LONG, SignalType.ADD_LONG,
+                    SignalType.REDUCE_LONG, SignalType.CLOSE_LONG,
+                ) else PositionDirection.SHORT
+
+                # Guardar límites para dashboard (buy/sell según lado)
+                s = sig.to_order_side()
+                if s == "BUY":
+                    limits["buy_limit"] = sig.price
+                    limits["buy_reason"] = sig.reason
+                    self._print_event(f"    → Buy Limit: ${sig.price:,.2f} ({sig.reason})")
+                elif s == "SELL":
+                    limits["sell_limit"] = sig.price
+                    limits["sell_reason"] = sig.reason
+                    self._print_event(f"    → Sell Limit: ${sig.price:,.2f} ({sig.reason})")
+
+                # Ejecutar la operación según el tipo de señal
+                if st in (SignalType.OPEN_LONG, SignalType.OPEN_SHORT):
+                    await asyncio.to_thread(
+                        self.ob.open_position, direction, sig.price, self.wallet,
+                        candle.ts, None, st.value,
+                    )
+                elif st in (SignalType.ADD_LONG, SignalType.ADD_SHORT):
+                    await asyncio.to_thread(
+                        self.ob.add_position, direction, sig.price, self.wallet,
+                        candle.ts, None, st.value,
+                    )
+                elif st in (SignalType.REDUCE_LONG, SignalType.REDUCE_SHORT):
+                    await asyncio.to_thread(
+                        self.ob.reduce_position, direction, sig.price, self.wallet,
+                        candle.ts, None, st.value,
+                    )
+                elif st in (SignalType.CLOSE_LONG, SignalType.CLOSE_SHORT):
+                    await asyncio.to_thread(
+                        self.ob.close_position, direction, sig.price, self.wallet,
+                        candle.ts, None, st.value,
+                    )
 
         self._candle_limits[candle.ts] = limits
 
@@ -1591,6 +1713,15 @@ class LiveEngine:
                 log.info("Órdenes abiertas canceladas")
             except Exception as e:
                 log.warning("Error cancelando órdenes", error=str(e))
+
+        # Desactivar Dead Man's Switch (modos reales) para no dejar una
+        # cancelación programada residual después de un apagado ordenado.
+        if self._is_real and hasattr(self.ob, 'set_dead_mans_switch'):
+            try:
+                self.ob.set_dead_mans_switch(None)
+                log.info("Dead Man's Switch desactivado en shutdown")
+            except Exception as e:
+                log.warning("Error desactivando Dead Man's Switch", error=str(e))
 
         # Reporte final
         last_price = self.history_candles[-1].close if self.history_candles else 0.0

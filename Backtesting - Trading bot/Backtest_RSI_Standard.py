@@ -33,13 +33,13 @@ log = get_logger("backtest_rsi_standard_runner")
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Parámetros de la estrategia ──────────────────────────────────────────────
-RSI_PERIOD            = 30
-OVERSOLD_THRESHOLD    = 28.0
-OVERBOUGHT_THRESHOLD  = 65.0
-REDUCE_LONG           = 40.0
-REDUCE_SHORT          = 42.0
-MAX_POSICIONES        = 2
-SLOT_FACTOR           = 2.0
+RSI_PERIOD            = 15
+OVERSOLD_THRESHOLD    = 26
+OVERBOUGHT_THRESHOLD  = 65
+REDUCE_LONG           = 49
+REDUCE_SHORT          = 48
+MAX_POSICIONES        = 1
+SLOT_FACTOR           = 1.0
 MODO_OPERACION        = "limite_gtc"   # "limit_post_only" o "limite_gtc"
 
 # ── Los siguientes parámetros se toman directamente de config_local.py:
@@ -130,6 +130,11 @@ def main() -> None:
 
     summary = engine.run(strategy)
     engine.print_summary(summary)
+
+    # ── 10. Mantener la ventana abierta (útil al ejecutar el .exe compilado) ──
+    print("-" * 72)
+    input("  Proceso finalizado. Presiona ENTER para cerrar esta ventana...")
+    print()
 
 
 if __name__ == "__main__":
